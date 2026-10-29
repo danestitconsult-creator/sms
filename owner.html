@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Schoolroom Owner Console</title>
+<meta name="theme-color" content="#1B2540">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;800&family=Lexend:wght@400;500&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="login" hidden><form id="lf"><h1>Owner Console</h1><p class="sub">Sign in with your owner account.</p><input id="em" type="email" required placeholder="Email" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="email"><input id="pw" type="password" required placeholder="Password" autocomplete="current-password" enterkeyhint="go"><button>Sign in</button><p id="err" class="bad" role="alert"></p></form></div>
+<nav id="nav" hidden></nav>
+<main id="app" hidden></main>
+<script type="module">
+import {initializeApp,deleteApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getFirestore,collection,onSnapshot,setDoc,addDoc,updateDoc,deleteDoc,doc,getDoc} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,createUserWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {firebaseConfig} from "./firebase-config.js";
+const CUR='GH₵'; // currency symbol shown on invoices
+const app=initializeApp(firebaseConfig),fs=getFirestore(app),auth=getAuth(app);
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const today=()=>fmt(new Date());
+const svg=p=>`<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const I=Object.fromEntries(Object.entries({
+overview:'<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
+schools:'<path d="M22 10 12 5 2 10l10 5 10-5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/>',
+invoices:'<path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
+trash:'<path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v6M14 11v6"/>',
+out:'<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>'}).map(([k,v])=>[k,svg(v)]));
+const S={schools:[],invoices:[]};let unsubs=[],isOwner=false;
+const table=(h,r)=>r.length?`<div class="tw"><table><thead><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${r.map(a=>`<tr>${a.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:'<p class="empty">Nothing here yet.</p>';
+const head=(t,s)=>`<h1>${t}</h1><p class="sub">${s}</p>`;
+const owing=id=>S.invoices.filter(i=>i.schoolId===id&&!i.paid).reduce((a,i)=>a+i.amount,0);
+const status=i=>i.paid?['ok','Paid']:i.due<today()?['bad','Overdue']:['warn','Unpaid'];
+const views={
+overview(){const per=today().slice(0,7),act=S.schools.filter(s=>s.status==='active');
+const mrr=act.reduce((a,s)=>a+s.price,0),paid=S.invoices.filter(i=>i.paid&&(i.paidOn||'').slice(0,7)===per).reduce((a,i)=>a+i.amount,0);
+const un=S.invoices.filter(i=>!i.paid).sort((a,b)=>a.due.localeCompare(b.due)),od=un.filter(i=>i.due<today());
+return head('Overview','Subscription billing across all schools.')+`<div class="grid"><div class="stat"><b>${act.length}</b><span>Active schools</span></div><div class="stat"><b>${CUR}${mrr}</b><span>Monthly recurring</span></div><div class="stat"><b>${CUR}${paid}</b><span>Collected this month</span></div><div class="stat"><b>${CUR}${un.reduce((a,i)=>a+i.amount,0)}</b><span>Outstanding (${od.length} overdue)</span></div></div><div class="panel"><h3>Unpaid invoices</h3>${table(['School','Period','Amount','Due'],un.map(i=>[esc(i.schoolName),i.period,CUR+i.amount,`<span class="${i.due<today()?'bad':''}">${i.due}</span>`]))}</div>`},
+schools(){return head('Schools','Add a school, set its monthly fee and create its administrator login.')+`<div class="panel"><form class="add" data-form="school"><input name="name" placeholder="School name" required><input name="email" type="email" inputmode="email" autocapitalize="off" placeholder="Administrator email" required><input name="pw" minlength="6" placeholder="Temporary password" autocomplete="off" required><input name="price" type="number" step="any" min="0" inputmode="decimal" placeholder="Monthly fee" required><button>Add school</button></form>`+
+table(['School','Administrator','Monthly fee','Owing','Access',''],S.schools.map(s=>[esc(s.name),esc(s.adminEmail||'—'),CUR+s.price,CUR+owing(s.id),`<button class="pill ${s.status==='active'?'ok':'bad'}" data-tog="${s.id}">${s.status==='active'?'Active':'Suspended'}</button>`,'']))+'</div>'},
+invoices(){const per=today().slice(0,7);
+return head('Invoices','Generate monthly invoices and record payments.')+`<div class="panel"><form class="add" onsubmit="return false"><button data-act="gen">Generate invoices for ${per}</button><button class="ghost" data-act="susp">Suspend overdue schools</button></form>`+
+table(['School','Period','Amount','Due','Status',''],[...S.invoices].sort((a,b)=>b.period.localeCompare(a.period)||a.schoolName.localeCompare(b.schoolName)).map(i=>{const st=status(i);return[esc(i.schoolName),i.period,CUR+i.amount,i.due,`<button class="pill ${st[0]}" data-pay="${i.id}">${st[1]}</button>`,`<button class="ghost" data-del="${i.id}" aria-label="Delete">${I.trash}<span>Delete</span></button>`]}))+'</div>'}
+};
+const tabs=Object.keys(views);
+function render(){if(!isOwner)return;const v=tabs.includes(location.hash.slice(1))?location.hash.slice(1):'overview';
+$('#nav').hidden=false;$('#app').hidden=false;
+$('#nav').innerHTML='<div class="logo">Owner</div>'+tabs.map(t=>`<a href="#${t}" class="${t===v?'on':''}">${I[t]}<span>${t[0].toUpperCase()+t.slice(1)}</span></a>`).join('')+`<button class="ghost" id="out">${I.out}<span>Sign out</span></button>`;
+$('#app').innerHTML=views[v]()}
+const gate=m=>{$('#nav').hidden=true;$('#app').hidden=false;$('#app').innerHTML='<h1>Owner Console</h1><p class="sub">'+esc(m)+'</p><button class="ghost" id="out">Sign out</button>'};
+onAuthStateChanged(auth,async u=>{
+ unsubs.forEach(f=>f());unsubs=[];isOwner=false;
+ $('#login').hidden=!!u;$('#nav').hidden=!u;$('#app').hidden=!u;
+ if(!u)return;
+ try{const o=await getDoc(doc(fs,'users',u.uid));
+  if(!o.exists()||o.data().superAdmin!==true){gate('This account does not have super admin access.');return}
+  isOwner=true;
+  ['schools','invoices'].forEach(n=>unsubs.push(onSnapshot(collection(fs,n),s=>{S[n]=s.docs.map(d=>({...d.data(),id:d.id}));render()},e=>console.error(e))));
+  render()}
+ catch(e){gate('Could not verify your account. Check your connection.')}
+});
+$('#lf').addEventListener('submit',async e=>{e.preventDefault();$('#err').textContent='';
+ try{await signInWithEmailAndPassword(auth,$('#em').value,$('#pw').value)}
+ catch(x){$('#err').textContent='Could not sign in. Check your email and password.'}});
+async function createAdmin(email,pw){const sec=initializeApp(firebaseConfig,'sec'+Date.now());
+ try{const a=getAuth(sec),c=await createUserWithEmailAndPassword(a,email,pw);await signOut(a);return c.user.uid}finally{deleteApp(sec)}}
+document.addEventListener('submit',async e=>{if(e.target.dataset.form!=='school')return;e.preventDefault();
+ const d=Object.fromEntries(new FormData(e.target)),btn=e.target.querySelector('button');btn.disabled=true;
+ try{const r=await addDoc(collection(fs,'schools'),{name:d.name,adminEmail:d.email,price:+d.price,currency:CUR,status:'active',created:today()});
+  try{const uid=await createAdmin(d.email,d.pw);await setDoc(doc(fs,'users',uid),{schoolId:r.id,role:'admin',superAdmin:false,email:d.email})}
+  catch(x){alert('School added, but the administrator login failed ('+(x.code||'error')+'). If that email already has an account, use a different one.')}
+  e.target.reset()}catch(x){alert('Could not add the school. Check your Firestore rules.')}
+ btn.disabled=false});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const D=b.dataset,f=x=>x.catch(()=>alert('That change could not be saved.'));
+ if(b.id==='out')signOut(auth);
+ else if(D.tog){const s=S.schools.find(x=>x.id===D.tog);f(updateDoc(doc(fs,'schools',s.id),{status:s.status==='active'?'suspended':'active'}))}
+ else if(D.pay){const i=S.invoices.find(x=>x.id===D.pay);f(updateDoc(doc(fs,'invoices',i.id),{paid:!i.paid,paidOn:i.paid?'':today()}))}
+ else if(D.del){if(confirm('Delete this invoice?'))f(deleteDoc(doc(fs,'invoices',D.del)))}
+ else if(D.act==='gen'){const per=today().slice(0,7),due=new Date();due.setDate(due.getDate()+14);
+  S.schools.filter(s=>s.status==='active').forEach(s=>{const id=s.id+'_'+per;if(!S.invoices.some(i=>i.id===id))f(setDoc(doc(fs,'invoices',id),{schoolId:s.id,schoolName:s.name,period:per,amount:s.price,currency:CUR,due:fmt(due),paid:false,paidOn:''}))})}
+ else if(D.act==='susp'){const ids=new Set(S.invoices.filter(i=>!i.paid&&i.due<today()).map(i=>i.schoolId)),hit=S.schools.filter(s=>ids.has(s.id)&&s.status==='active');
+  if(!hit.length){alert('No active school has an overdue invoice.');return}
+  if(confirm('Suspend '+hit.length+' school(s) with overdue invoices? They lose access until you reactivate them.'))hit.forEach(s=>f(updateDoc(doc(fs,'schools',s.id),{status:'suspended'})))}});
+addEventListener('hashchange',render);
+</script>
+</body>
+</html>
