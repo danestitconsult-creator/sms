@@ -19,13 +19,13 @@
 <body>
 <div id="net" role="status" hidden></div>
 <div id="tip" role="note" hidden><span>To install on iPhone: tap Share, then Add to Home Screen.</span><button class="ghost" id="tipx">Got it</button></div>
-<div id="login" hidden><form id="lf"><h1>Schoolroom</h1><p class="sub">Sign in to manage your school.</p><input id="em" type="email" required placeholder="Email" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="email"><input id="pw" type="password" required placeholder="Password" autocomplete="current-password" enterkeyhint="go"><button>Sign in</button><p id="err" class="bad" role="alert"></p></form></div>
+<div id="login" hidden><aside class="hero"><div class="brand"><img src="icons/icon.svg" alt="" width="40" height="40">Schoolroom</div><h2>Run your whole school from one place.</h2><ul><li>Students, teachers and classes</li><li>Attendance, grades and fees</li><li>Works offline and syncs when you reconnect</li></ul></aside><section class="authcard"><div class="tabs"><button type="button" class="on" data-mode="in">Sign in</button><button type="button" data-mode="up">Register school</button></div><form id="lf"><h1 id="lt">Welcome back</h1><p class="sub" id="ls">Sign in to manage your school.</p><input id="sn" placeholder="School name" autocomplete="organization" hidden><input id="em" type="email" required placeholder="Email" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="email"><input id="pw" type="password" required placeholder="Password" autocomplete="current-password" enterkeyhint="go"><button id="go">Sign in</button><p id="err" class="bad" role="alert"></p></form></section></div>
 <nav id="nav" hidden></nav>
 <main id="app" hidden></main>
 <script type="module">
 import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {getFirestore,initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,onSnapshot,addDoc,deleteDoc,doc,updateDoc,setDoc,getDoc,query,where} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,createUserWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {firebaseConfig} from "./firebase-config.js";
 const app=initializeApp(firebaseConfig),auth=getAuth(app);
 let fs;try{fs=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})})}catch(e){fs=getFirestore(app)}
@@ -67,7 +67,10 @@ function listen(){
  unsubs.push(onSnapshot(query(collection(fs,'invoices'),where('schoolId','==',SID)),s=>{db.inv=s.docs.map(d=>({...d.data(),id:d.id}));render()},err));
  unsubs.push(onSnapshot(doc(fs,'schools',SID),s=>{school=s.data()||null;if(school&&school.status==='suspended')gate('Your school’s subscription is inactive. Contact the Schoolroom owner to restore access.');else render()},err));
 }
-onAuthStateChanged(auth,async u=>{
+let signingUp=false,mode='in';
+const CUR='GH₵';
+const msg=x=>({'auth/email-already-in-use':'That email already has an account. Sign in instead.','auth/weak-password':'Use a password of at least 6 characters.','auth/invalid-email':'Enter a valid email address.','auth/invalid-credential':'Wrong email or password.','auth/network-request-failed':'No connection. Try again when you are online.','permission-denied':'Your account was created but the school could not be set up. Contact support.'}[x.code]||'Something went wrong. Please try again.');
+async function boot(u){
  unsubs.forEach(f=>f());unsubs=[];SID=null;school=null;
  $('#login').hidden=!!u;$('#nav').hidden=!u;$('#app').hidden=!u;
  if(!u)return;
@@ -76,10 +79,22 @@ onAuthStateChanged(auth,async u=>{
   if(!d.schoolId){if(d.superAdmin===true){location.replace('owner.html');return}gate('Your account is not linked to a school yet. Ask your administrator to add you.');return}
   SID=d.schoolId;listen();render()}
  catch(e){gate('Could not load your account. Check your connection and try again.')}
-});
-$('#lf').addEventListener('submit',async e=>{e.preventDefault();$('#err').textContent='';
- try{await signInWithEmailAndPassword(auth,$('#em').value,$('#pw').value)}
- catch(x){$('#err').textContent='Could not sign in. Check your email and password.'}});
+}
+onAuthStateChanged(auth,u=>{if(!signingUp)boot(u)});
+function setMode(m){mode=m;document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.mode===m));
+ const up=m==='up';$('#sn').hidden=!up;$('#sn').required=up;$('#pw').autocomplete=up?'new-password':'current-password';$('#pw').minLength=up?6:0;
+ $('#lt').textContent=up?'Register your school':'Welcome back';$('#ls').textContent=up?'Create your school account. You will be its administrator.':'Sign in to manage your school.';$('#go').textContent=up?'Create account':'Sign in';$('#err').textContent=''}
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));
+$('#lf').addEventListener('submit',async e=>{e.preventDefault();$('#err').textContent='';const btn=$('#go');btn.disabled=true;
+ try{
+  if(mode==='in')await signInWithEmailAndPassword(auth,$('#em').value,$('#pw').value);
+  else{signingUp=true;const c=await createUserWithEmailAndPassword(auth,$('#em').value,$('#pw').value);
+   const r=await addDoc(collection(fs,'schools'),{name:$('#sn').value.trim(),adminEmail:c.user.email,price:0,currency:CUR,status:'active',created:today(),ownerUid:c.user.uid});
+   await setDoc(doc(fs,'users',c.user.uid),{schoolId:r.id,role:'admin',superAdmin:false,email:c.user.email});
+   signingUp=false;await boot(c.user)}
+ }catch(x){signingUp=false;$('#err').textContent=msg(x)}
+ btn.disabled=false});
+const av=n=>{const h=[...n].reduce((a,c)=>a+c.charCodeAt(0),0)%360;return `<span class="nm"><i class="av" style="--h:${h}">${esc((n.trim()[0]||'?').toUpperCase())}</i>${esc(n)}</span>`};
 const sName=id=>(db.students.find(s=>s.id===id)||{name:'Removed'}).name;
 const cName=id=>(db.classes.find(c=>c.id===id)||{name:'—'}).name;
 const tName=id=>(db.teachers.find(t=>t.id===id)||{name:'Unassigned'}).name;
@@ -96,29 +111,29 @@ const day=Object.entries(db.att).filter(([k])=>k.startsWith(today()+'|')).flatMa
 const rate=day.length?Math.round(day.filter(v=>v!=='A').length/day.length*100)+'%':'—';
 const paid=db.fees.filter(f=>f.paid).reduce((a,f)=>a+f.amount,0),all=db.fees.reduce((a,f)=>a+f.amount,0);
 const top=db.students.map(s=>({n:s.name,a:avg(s.id)})).filter(x=>x.a!==null).sort((a,b)=>b.a-a.a).slice(0,5);
-return head('Dashboard','Where the school stands today.')+`<div class="grid"><div class="stat"><b>${st}</b><span>Students</span></div><div class="stat"><b>${db.teachers.length}</b><span>Teachers</span></div><div class="stat"><b>${db.classes.length}</b><span>Classes</span></div><div class="stat"><b>${rate}</b><span>Present today</span></div></div>
+return head(esc(school?school.name:'Dashboard'),'Where your school stands today.')+`<div class="grid"><div class="stat"><i class="ico">${I.students}</i><div><b>${st}</b><span>Students</span></div></div><div class="stat"><i class="ico">${I.teachers}</i><div><b>${db.teachers.length}</b><span>Teachers</span></div></div><div class="stat"><i class="ico">${I.classes}</i><div><b>${db.classes.length}</b><span>Classes</span></div></div><div class="stat"><i class="ico">${I.attendance}</i><div><b>${rate}</b><span>Present today</span></div></div></div>
 <div class="two"><div class="panel"><h3>Fee collection</h3><div class="bar"><i style="width:${all?paid/all*100:0}%"></i></div><p class="sub" style="margin:10px 0 0">${paid} collected of ${all} billed. ${all-paid} outstanding.</p></div>
 <div class="panel"><h3>Top students by average</h3>${top.length?table(['Student','Average'],top.map(t=>[esc(t.n),t.a.toFixed(1)+' ('+letter(t.a)+')'])):'<p class="empty">Enter grades to see rankings.</p>'}</div></div>
 <div class="panel"><h3>Class sizes</h3>${table(['Class','Teacher','Students'],db.classes.map(c=>[esc(c.name),esc(tName(c.teacher)),db.students.filter(s=>s.cls===c.id).length]))}</div>`},
 students(){return head('Students','Enrol and manage student records.')+`<div class="panel"><form class="add" data-form="students"><input name="name" placeholder="Full name" required><select name="cls" required>${opts(db.classes)}</select><input name="guardian" placeholder="Guardian name"><button>Enrol student</button></form>`+
-table(['Name','Class','Guardian','Average',''],db.students.map(s=>{const a=avg(s.id);return[esc(s.name),esc(cName(s.cls)),esc(s.guardian||'—'),a===null?'—':a.toFixed(1)+' ('+letter(a)+')',del('students',s.id)]}))+'</div>'},
+table(['Name','Class','Guardian','Average',''],db.students.map(s=>{const a=avg(s.id);return[av(s.name),esc(cName(s.cls)),esc(s.guardian||'—'),a===null?'—':a.toFixed(1)+' ('+letter(a)+')',del('students',s.id)]}))+'</div>'},
 teachers(){return head('Teachers','Staff and their subjects.')+`<div class="panel"><form class="add" data-form="teachers"><input name="name" placeholder="Teacher name" required><input name="subject" placeholder="Subject" required><button>Add teacher</button></form>`+
-table(['Name','Subject','Class',''],db.teachers.map(t=>[esc(t.name),esc(t.subject),esc(db.classes.filter(c=>c.teacher===t.id).map(c=>c.name).join(', ')||'—'),del('teachers',t.id)]))+'</div>'},
+table(['Name','Subject','Class',''],db.teachers.map(t=>[av(t.name),esc(t.subject),esc(db.classes.filter(c=>c.teacher===t.id).map(c=>c.name).join(', ')||'—'),del('teachers',t.id)]))+'</div>'},
 classes(){return head('Classes','Create classes and assign a class teacher.')+`<div class="panel"><form class="add" data-form="classes"><input name="name" placeholder="Class name, e.g. Grade 7A" required><select name="teacher">${opts(db.teachers)}</select><button>Create class</button></form>`+
 table(['Class','Class teacher','Students',''],db.classes.map(c=>[esc(c.name),esc(tName(c.teacher)),db.students.filter(s=>s.cls===c.id).length,del('classes',c.id)]))+'</div>'},
 attendance(){attCls=attCls||(db.classes[0]||{}).id;const key=attDate+'|'+attCls,rec=db.att[key]||{},list=db.students.filter(s=>s.cls===attCls);
 return head('Attendance','Mark each student present, absent or late. Changes save instantly.')+`<div class="panel"><form class="add" onsubmit="return false"><select id="acls">${opts(db.classes,'name',attCls)}</select><input type="date" id="adate" value="${attDate}"></form>`+
-(list.length?table(['Student','Status'],list.map(s=>[esc(s.name),`<div class="seg">${[['P','Present','p'],['A','Absent','a'],['L','Late','l']].map(x=>`<button class="${rec[s.id]===x[0]?x[2]:''}" data-att="${s.id}:${x[0]}">${x[1]}</button>`).join('')}</div>`])):'<p class="empty">This class has no students yet.</p>')+'</div>'},
+(list.length?table(['Student','Status'],list.map(s=>[av(s.name),`<div class="seg">${[['P','Present','p'],['A','Absent','a'],['L','Late','l']].map(x=>`<button class="${rec[s.id]===x[0]?x[2]:''}" data-att="${s.id}:${x[0]}">${x[1]}</button>`).join('')}</div>`])):'<p class="empty">This class has no students yet.</p>')+'</div>'},
 grades(){return head('Grades','Record scores out of 100. Letter grades are calculated for you.')+`<div class="panel"><form class="add" data-form="grades"><select name="sid" required>${opts(db.students)}</select><input name="subject" placeholder="Subject" required><input name="score" type="number" inputmode="numeric" min="0" max="100" placeholder="Score" required><button>Save grade</button></form>`+
-table(['Student','Subject','Score','Grade',''],db.grades.map(g=>[esc(sName(g.sid)),esc(g.subject),g.score,`<span class="pill ${g.score>=50?'ok':'bad'}">${letter(g.score)}</span>`,del('grades',g.id)]))+'</div>'},
+table(['Student','Subject','Score','Grade',''],db.grades.map(g=>[av(sName(g.sid)),esc(g.subject),g.score,`<span class="pill ${g.score>=50?'ok':'bad'}">${letter(g.score)}</span>`,del('grades',g.id)]))+'</div>'},
 fees(){return head('Fees','Bill students and track payments. Select a status to switch it.')+`<div class="panel"><form class="add" data-form="fees"><select name="sid" required>${opts(db.students)}</select><input name="amount" type="number" inputmode="decimal" min="1" placeholder="Amount" required><label class="dl">Due date<input name="due" type="date" required></label><button>Create invoice</button></form>`+
-table(['Student','Amount','Due','Status',''],db.fees.map(f=>[esc(sName(f.sid)),f.amount,f.due,`<button class="pill ${f.paid?'ok':f.due<today()?'bad':'warn'}" data-pay="${f.id}">${f.paid?'Paid':f.due<today()?'Overdue':'Pending'}</button>`,del('fees',f.id)]))+'</div>'},
+table(['Student','Amount','Due','Status',''],db.fees.map(f=>[av(sName(f.sid)),f.amount,f.due,`<button class="pill ${f.paid?'ok':f.due<today()?'bad':'warn'}" data-pay="${f.id}">${f.paid?'Paid':f.due<today()?'Overdue':'Pending'}</button>`,del('fees',f.id)]))+'</div>'},
 billing(){const l=[...db.inv].sort((a,b)=>b.period.localeCompare(a.period));
-return head('Billing','Your Schoolroom subscription invoices.')+'<div class="panel">'+(school?`<p>Plan: ${esc(school.currency||'')}${school.price} per month. Status: ${esc(school.status)}.</p>`:'')+table(['Period','Amount','Due','Status'],l.map(i=>[i.period,esc(i.currency||'')+i.amount,i.due,`<span class="pill ${i.paid?'ok':i.due<today()?'bad':'warn'}">${i.paid?'Paid':i.due<today()?'Overdue':'Unpaid'}</span>`]))+'</div>'}
+return head('Billing','Your Schoolroom subscription invoices.')+'<div class="panel">'+(school?`<p>Plan: ${school.price>0?esc(school.currency||'')+school.price+' per month':'Free trial'}. Status: ${esc(school.status)}.</p>`:'')+table(['Period','Amount','Due','Status'],l.map(i=>[i.period,esc(i.currency||'')+i.amount,i.due,`<span class="pill ${i.paid?'ok':i.due<today()?'bad':'warn'}">${i.paid?'Paid':i.due<today()?'Overdue':'Unpaid'}</span>`]))+'</div>'}
 };
 const tabs=Object.keys(views);
 function render(){if(!SID||(school&&school.status==='suspended'))return;$('#nav').hidden=false;const v=tabs.includes(location.hash.slice(1))?location.hash.slice(1):'dashboard';
-$('#nav').innerHTML='<div class="logo">Schoolroom</div>'+tabs.map(t=>`<a href="#${t}" class="${t===v?'on':''}">${I[t]}<span>${t[0].toUpperCase()+t.slice(1)}</span></a>`).join('')+'<button class="ghost" id="out">'+I.out+'<span>Sign out</span></button>';
+$('#nav').innerHTML='<div class="logo"><img src="icons/icon.svg" alt="" width="28" height="28">Schoolroom</div>'+tabs.map(t=>`<a href="#${t}" class="${t===v?'on':''}">${I[t]}<span>${t[0].toUpperCase()+t.slice(1)}</span></a>`).join('')+'<div class="who">'+esc((auth.currentUser||{}).email||'')+'</div><button class="ghost" id="out">'+I.out+'<span>Sign out</span></button>';
 $('#app').innerHTML=views[v]();}
 document.addEventListener('submit',e=>{const t=e.target.dataset.form;if(!t)return;e.preventDefault();
 const d=Object.fromEntries(new FormData(e.target));
